@@ -15,9 +15,8 @@ GMAIL_DESTINATARIO = os.getenv("GMAIL_DESTINATARIO", "")
 DIGILIZA_URL       = os.getenv("DIGILIZA_API_URL", "https://chat.digiliza.com")
 ACCOUNT_ID         = os.getenv("DIGILIZA_ACCOUNT_ID", "132")
 
-# Debounce: agrupa mensagens soltas enviadas em sequencia
 _debounce_buffer: dict = {}
-_debounce_delay  = 4.0  # segundos para aguardar mais mensagens
+_debounce_delay = 4.0
 
 
 @router.post("/webhook/digiliza-reply")
@@ -36,36 +35,23 @@ async def receive_digiliza_reply(request: Request, background_tasks: BackgroundT
 
 
 async def handle_reply_debounced(event: dict):
-    """Agrupa mensagens consecutivas antes de processar."""
     conversation_id = event["conversation"]["id"]
     chave = str(conversation_id)
     mensagem = event.get("content", "")
     if not mensagem:
         return
-
     if chave not in _debounce_buffer:
         _debounce_buffer[chave] = {"mensagens": [], "event": event}
-
     _debounce_buffer[chave]["mensagens"].append(mensagem)
-
     await asyncio.sleep(_debounce_delay)
-
-    # Verifica se novas mensagens chegaram durante o delay
     buffer = _debounce_buffer.get(chave, {})
     if not buffer:
         return
-
     mensagens = buffer.get("mensagens", [])
-    ultimo_event = buffer.get("event", event)
-
-    # Limpa o buffer
     _debounce_buffer.pop(chave, None)
-
-    # Junta todas as mensagens em uma so
     mensagem_final = " ".join(mensagens)
     ultimo_event = dict(event)
     ultimo_event["content"] = mensagem_final
-
     await handle_reply(ultimo_event)
 
 
@@ -153,12 +139,12 @@ async def _handle_acao(acao, qualifier, digiliza, conversation_id, email):
         await digiliza.update_conversation_label(conversation_id, ["desqualificado"])
         await digiliza.send_message(
             conversation_id,
-            "Que bom ter conversado! Por enquanto nossa plataforma pode ser um pouco alem do que voce precisa agora, mas isso e otimo — significa que esta no caminho certo do crescimento."
+            "Que bom ter conversado! Por enquanto nossa plataforma pode ser um pouco além do que você precisa agora, mas isso é ótimo — significa que você está no caminho certo 😊"
         )
         await asyncio.sleep(2)
         await digiliza.send_message(
             conversation_id,
-            "No nosso blog tem muito conteudo que pode te ajudar nessa jornada: magazord.com.br/blog — e quando a operacao escalar, pode chamar que conversamos!"
+            "No nosso blog tem muito conteúdo que pode te ajudar nessa jornada: magazord.com.br/blog — qualquer dúvida é só chamar!"
         )
 
     elif tipo == "transferir":
@@ -177,7 +163,6 @@ async def _handle_acao(acao, qualifier, digiliza, conversation_id, email):
 
 
 def _enviar_email_sendgrid(lead_email, state, score, resumo, conversation_id, tipo):
-    """E-mail unico para qualificado e transferido — apenas o status muda."""
     if not SENDGRID_API_KEY or not GMAIL_REMETENTE or not GMAIL_DESTINATARIO:
         logger.warning("SendGrid nao configurado — pulando envio de e-mail.")
         return
@@ -191,7 +176,6 @@ def _enviar_email_sendgrid(lead_email, state, score, resumo, conversation_id, ti
         assunto   = lead.get("assunto", "-")
         telefone  = lead.get("phone_number", "-")
         link_conv = f"{DIGILIZA_URL}/app/accounts/{ACCOUNT_ID}/conversations/{conversation_id}"
-
         if tipo == "qualificado":
             label_status  = "QUALIFICADO"
             cor_status    = "#1e8e3e"
@@ -202,7 +186,6 @@ def _enviar_email_sendgrid(lead_email, state, score, resumo, conversation_id, ti
             cor_status    = "#1a73e8"
             score_txt     = ""
             assunto_email = f"[TRANSFERIDO] Lead - {empresa}"
-
         corpo_html = f"""<html><body style="font-family:Arial,sans-serif;color:#202124;max-width:600px;margin:0 auto;">
 <div style="background:#1a73e8;padding:20px;border-radius:8px 8px 0 0;">
   <h2 style="color:white;margin:0;">Magazord - IA de Atendimento</h2>
@@ -227,7 +210,6 @@ def _enviar_email_sendgrid(lead_email, state, score, resumo, conversation_id, ti
   <p style="color:#5f6368;font-size:12px;margin-top:20px;text-align:center;">Enviado automaticamente pela IA de Atendimento da Magazord</p>
 </div>
 </body></html>"""
-
         msg = Mail(
             from_email=GMAIL_REMETENTE,
             to_emails=GMAIL_DESTINATARIO,
