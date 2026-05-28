@@ -1,4 +1,4 @@
-﻿import asyncio, logging, os
+﻿import asyncio, logging, os, tempfile
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
@@ -14,6 +14,7 @@ GMAIL_REMETENTE    = os.getenv("GMAIL_REMETENTE", "")
 GMAIL_DESTINATARIO = os.getenv("GMAIL_DESTINATARIO", "")
 DIGILIZA_URL       = os.getenv("DIGILIZA_API_URL", "https://chat.digiliza.com")
 ACCOUNT_ID         = os.getenv("DIGILIZA_ACCOUNT_ID", "132")
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
 
 _debounce_buffer: dict = {}
 _debounce_delay = 4.0
@@ -38,8 +39,20 @@ async def handle_reply_debounced(event: dict):
     conversation_id = event["conversation"]["id"]
     chave = str(conversation_id)
     mensagem = event.get("content", "")
-    if not mensagem:
+
+    # Verifica se e audio
+    attachments = event.get("attachments", [])
+    is_audio = any(a.get("file_type") == "audio" for a in attachments)
+
+    if not mensagem and not is_audio:
+        logger.info("Evento sem texto e sem audio — ignorando")
         return
+
+    # Audio nao entra no debounce — processa direto
+    if is_audio:
+        await handle_reply(event)
+        return
+
     if chave not in _debounce_buffer:
         _debounce_buffer[chave] = {"mensagens": [], "event": event}
     _debounce_buffer[chave]["mensagens"].append(mensagem)
@@ -55,13 +68,62 @@ async def handle_reply_debounced(event: dict):
     await handle_reply(ultimo_event)
 
 
+async def _transcrever_audio(data_url: str) -> str:
+    if not GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY nao configurada — pulando transcricao")
+        return ""
+    try:
+        import httpx
+        from groq import Groq
+
+        async with httpx.AsyncClient(timeout=30) as c:
+            headers = {"api_access_token": os.getenv("DIGILIZA_API_KEY", "")}
+            r = await c.get(data_url, headers=headers, follow_redirects=True)
+            r.raise_for_status()
+            audio_bytes = r.content
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        client = Groq(api_key=GROQ_API_KEY)
+        with open(tmp_path, "rb") as f:
+            transcricao = client.audio.transcriptions.create(
+                file=("audio.ogg", f, "audio/ogg"),
+                model="whisper-large-v3",
+                language="pt",
+            )
+
+        os.unlink(tmp_path)
+        texto = transcricao.text.strip()
+        logger.info("Audio transcrito: %s", texto[:100])
+        return texto
+
+    except Exception as e:
+        logger.error("Erro ao transcrever audio: %s", e)
+        return ""
+
+
 async def handle_reply(event: dict):
     try:
         conversation_id = event["conversation"]["id"]
         contact  = event["conversation"]["meta"]["sender"]
         email    = contact.get("email", "")
         phone    = contact.get("phone_number", "")
-        mensagem = event.get("content", "")
+        mensagem = event.get("content", "") or ""
+
+        # Processa audio se necessario
+        attachments = event.get("attachments", [])
+        audio_att = next((a for a in attachments if a.get("file_type") == "audio"), None)
+        if audio_att and not mensagem:
+            data_url = audio_att.get("data_url", "")
+            logger.info("Audio detectado — transcrevendo...")
+            mensagem = await _transcrever_audio(data_url)
+            if not mensagem:
+                logger.warning("Transcricao vazia — ignorando audio")
+                return
+            logger.info("Audio transcrito com sucesso: %s", mensagem[:80])
+
         if not mensagem:
             return
 
